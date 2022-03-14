@@ -36,6 +36,6 @@ Python3, VMD
 
 **Examples:**
 
-In a folder containing one .psf file, one .dcd file, and analysis scripts of an ion conduction simulation: _python3 -t 1000_
+In a folder containing one .psf file, one .dcd file, and analysis scripts of a 1000 ns long ion conduction simulation: _python3 -t 1000_
 
-In a folder containing one .psf file, one .dcd file, and analysis scripts of a drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 -t 1000 --drug HETB -s 3_
+In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 -t 3000 --drug HETB -s 3_
