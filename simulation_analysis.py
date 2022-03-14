@@ -22,7 +22,7 @@ plt.rcParams.update({'figure.max_open_warning': 0})
 #######################################
 # Plot the following data:
 # 1. Changes in filter diameters (based on CA or O distances)
-# 2. Changes in pore diamters (based on CA or O distances)
+# 2. Changes in pore diameters (based on CA or O distances)
 # 3. Symmetry of filter
 # 4. Symmetry of pore
 # 5. Phi/Psi/Chi1/Chi2 angles of filter and pore residues
