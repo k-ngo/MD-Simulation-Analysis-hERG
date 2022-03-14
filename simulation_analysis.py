@@ -16,23 +16,25 @@ matplotlib.use('Agg')
 simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 plt.rcParams.update({'figure.max_open_warning': 0})
 
-##############################################
-# Highly Automatic Analysis of MD Simulation #
-# for the hERG Channel                       #
-##############################################
+#######################################
+# Automatic Analysis of MD Simulation #
+# for the hERG Channel                #
+#######################################
 # Plot the following data:
-# 1. Changes in area of filter (based on CA or O distances)
-# 2. Changes in area of pore (based on CA or O distances)
-# 3. Symmetry of Filter
-# 4. Symmetry of Pore
+# 1. Changes in filter diameters (based on CA or O distances)
+# 2. Changes in pore diamters (based on CA or O distances)
+# 3. Symmetry of filter
+# 4. Symmetry of pore
 # 5. Phi/Psi/Chi1/Chi2 angles of filter and pore residues
 # 6. Numbers of water in filter and pore
+# 7. Ion movement in the filter
+# 8. Drug movement in the pore
 #
-# Requirement:
-# VMD needs to be set so that it can be opened by invoking "vmd" in the terminal.
+# Requirements:
+# Python3, VMD
 #
 # Usage:
-# 1. Place this script in directory containing simulation files.
+# 1. Place this script in directory containing 1 protein structure file and 1 simulation trajectory file.
 # 2. Run this script (Python 3):
 #   python3 simulation_analysis.py  -p [protein structure file (default=.psf in current dir)]
 #                                   -d [simulation trajectory file (default=.dcd in current dir)]
