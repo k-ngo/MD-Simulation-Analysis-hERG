@@ -11,7 +11,8 @@ import argparse
 from matplotlib.ticker import AutoMinorLocator
 from itertools import cycle
 from warnings import simplefilter
-import psutil
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+import matplotlib.patheffects as pe
 matplotlib.use('Agg')
 simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 plt.rcParams.update({'figure.max_open_warning': 0})
@@ -40,7 +41,8 @@ plt.rcParams.update({'figure.max_open_warning': 0})
 #                                   -d [simulation trajectory file (default=.dcd in current dir)]
 #                                   -t [total simulation time of the whole trajectory (default = 1000)]
 #                                   -e [analyze the simulation to this frame (default = -1 i.e. all)]
-#                                   -s [split each plot into # of smaller plots covering different time periods (default = 1 i.e. do not split)]
+#                                   -s [step to read trajectory file (default = 1 i.e. do not skip any frame, 2 to skip every 1 frame)]
+#                                   --split [split each plot into # of smaller plots covering different time periods (default = 1 i.e. do not split)]
 #                                   --drug [set to the segname of the drug to analyze drug movement in the pore as opposed to ion movement in the filter]
 #   Optional arguments:
 #                                   -x [x label (default='Time (ns)')]
@@ -59,18 +61,22 @@ parser.add_argument('-d', '--dcd',
                     dest='dcd', action='store',
                     help='.dcd file containing simulation trajectory (any trajectory format will also work)')
 parser.add_argument('-t', '--time',
-                    default=5000,
+                    default=777,
                     dest='time_total', action='store', type=float,
                     help='total simulation time of the full provided trajectory')
 parser.add_argument('-e', '--end',
                     default=-1,
                     dest='end_frame', action='store', type=int,
                     help='analyze to which frame of the simulation')
+parser.add_argument('-s', '--step',
+                    default=1,
+                    dest='step', action='store', type=int,
+                    help='step used when loading trajectory (i.e., 1 to read every single frame, 2 to read every two frames...)')
 parser.add_argument('--drug',
                     default=None,
                     dest='drug', action='store',
                     help='segname of the drug to analyze drug movement in the pore, if enabled (by inputting drug segname) will replace ion movement with drug movement')
-parser.add_argument('-s', '--split',
+parser.add_argument('--split',
                     default=1,
                     dest='split', action='store', type=int,
                     help='split each plot into # of smaller plots covering different time periods, useful for long simulations')
@@ -98,7 +104,7 @@ def closest(input_list, k):
     """Find closest number to k in list"""
     input_list = np.asarray(input_list)
     index = (np.abs(input_list - k)).argmin()
-    return index, input_list[index]
+    return index
 
 
 def normalize_angles(angles, ax):
@@ -129,6 +135,33 @@ def turn_y_axis_symmetric(ax):
         ax.set(ylim=(min, 1 + (1 - min)))
 
 
+def create_labels(data):
+    """Create list of labels, consisting of solely whole numbers, for plotting"""
+    # Necessary because by default time labels on x-axis will be ugly (e.g., 137.13, 252.23, 356.45...),
+    # this section is to make it to display only labels for every specified label_interval (e.g., 100, 200, 300... if label_interval = 100) through use of rounding
+    if arg.time_total <= 100:
+        label_interval = 5
+    elif arg.time_total <= 300:
+        label_interval = 15
+    elif arg.time_total <= 500:
+        label_interval = 25
+    elif arg.time_total <= 1000:
+        label_interval = 50
+    elif arg.time_total <= 3000:
+        label_interval = 150
+    else:
+        label_interval = 250
+    label_list = [np.NaN] * len(data)
+    label_locations = []
+    time_labels = []
+    for t in np.arange(0, int(arg.time_total), label_interval):
+        index_of_closest_time_in_data = closest(time, t)
+        label_list[index_of_closest_time_in_data] = round(t / label_interval) * label_interval
+        time_labels.append(t)
+        label_locations.append(index_of_closest_time_in_data)
+    return label_list, label_locations, time_labels
+
+
 # Define filter and pore labels
 filter_labels = ['S624', 'V625', 'G626', 'F627', 'G628']
 pore_labels = ['Y652', 'F656', 'S660']
@@ -151,7 +184,7 @@ print('PSF          :', arg.psf)
 print('DCD          :', arg.dcd)
 print('Filter Res   :', filter_labels)
 print('Pore Res     :', pore_labels)
-name = arg.dcd.split('.')[0]
+name = '.'.join(arg.dcd.split('.')[:-1])
 
 if arg.drug:
     print('Drug Seg     :', arg.drug, end='\n\n')
@@ -174,7 +207,7 @@ if arg.run_command == True:
     with open(vmd_cmd_file, 'w+') as f:
         # Load trajectory files
         f.write('mol new ' + arg.psf + ' type psf first 0 last -1 step 1 filebonds 1 autobonds 1 waitfor all\n')
-        f.write('mol addfile ' + arg.dcd + ' type ' + arg.dcd.split('.')[-1] + ' first 0 last ' + str(arg.end_frame) + ' step 1 filebonds 1 autobonds 1 waitfor all\n')
+        f.write('mol addfile ' + arg.dcd + ' type ' + arg.dcd.split('.')[-1] + ' first 0 last ' + str(arg.end_frame) + ' step ' + str(arg.step) + ' filebonds 1 autobonds 1 waitfor all\n')
 
         # Center protein
         f.write('source prot_center.tcl\n')
@@ -225,7 +258,7 @@ if arg.run_command == True:
             f.write('set outputname_min_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_min_z.dat') + '"\n')
             f.write('source drug_movement.tcl\n')
         else:
-            f.write('set sel [atomselect top "name POT"]\n')
+            f.write('set sel [atomselect top {name "K\\+" or name "POT"}]\n')
             f.write('animate write pdb ' + os.path.join('temp_pdb', name + '_potassium_ions.pdb') + ' skip 1 sel $sel\n')
 
         f.write('exit')
@@ -275,7 +308,7 @@ if not arg.drug:
                 break
             num_ions += 1
     ions_list = pd.read_fwf(os.path.join('temp_pdb', name + '_potassium_ions.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1, nrows=num_ions)
-    ions_list = ions_list[ions_list[2] == 'POT']
+    ions_list = ions_list[(ions_list[2] == 'K+') | (ions_list[2] == 'POT')]
     ions_list = (ions_list[2] + ions_list[1].astype('str')).values
     ions_x = pd.DataFrame(index=ions_list)
     ions_y = pd.DataFrame(index=ions_list)
@@ -332,8 +365,8 @@ if not all(os.path.exists(result) for result in saved_results):
         BD_list.append(BD_values)
         frame_count += 1
         if frame_count % 50 == 0:
-            print('\rPROGRESS:     ', frame_count, end=' frames', flush=True)
-    print('\rPROGRESS:     ', frame_count, end=' frames (DONE)\n', flush=True)
+            print('\r   PROGRESS:     ', frame_count, end=' frames', flush=True)
+    print('\r   PROGRESS:     ', frame_count, end=' frames (DONE)\n', flush=True)
     # Concatenate to final results
     area = pd.DataFrame(np.transpose(area_list), index=atom_labels)
     symmetry = pd.DataFrame(np.transpose(symmetry_list), index=opposing_atom_labels)
@@ -354,7 +387,6 @@ else:
     symmetry = pd.read_csv(saved_results[1], index_col=0)
     ACs = pd.read_csv(saved_results[2], index_col=0)
     BDs = pd.read_csv(saved_results[3], index_col=0)
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
 ################################################################################################
 
 # Analyze ion movement through the filter
@@ -371,15 +403,15 @@ if not arg.drug:
             frame.reset_index(drop=True, inplace=True)
             frame.columns = ['Atom', 'Index', 'Type', 'Residue', 'Chain', 'ResNum', 'X', 'Y', 'Z', 'Occupancy', 'TempFactor', 'Segment']
             # Drop every row except those containing ion of interest
-            frame = frame[frame['Residue'] == 'POT']
+            frame = frame[(frame['Residue'] == 'K+') | (frame['Residue'] == 'POT')]
             # Record z values of each ion of interest to dataframe containing the results so far
             ions_x[frame_count] = frame['X'].values
             ions_y[frame_count] = frame['Y'].values
             ions_z[frame_count] = frame['Z'].values
             frame_count += 1
             if frame_count % 50 == 0:
-                print('\rPROGRESS:     ', frame_count, end=' frames', flush=True)
-        print('\rPROGRESS:     ', frame_count, end=' frames (DONE)\n', flush=True)
+                print('\r   PROGRESS:     ', frame_count, end=' frames', flush=True)
+        print('\r   PROGRESS:     ', frame_count, end=' frames (DONE)\n', flush=True)
         # Save results as csv
         ions_x.to_csv(saved_results[0])
         ions_y.to_csv(saved_results[1])
@@ -417,26 +449,14 @@ fig3, axes3 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='poreCA_dia
 fig4, axes4 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filterCA_symmetry', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
 fig5, axes5 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filterO_symmetry', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
 fig6, axes6 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='poreCA_symmetry', gridspec_kw={'height_ratios': [1, 1, 1, 2]})  # rows, columns
-fig7, axes7 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_phi_AC', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig8, axes8 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_psi_AC', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig9, axes9 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_chi1_AC', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig10, axes10 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_chi2_AC', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig11, axes11 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_phi_BD', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig12, axes12 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_psi_BD', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig13, axes13 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_chi1_BD', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig14, axes14 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filter_chi2_BD', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
-fig15, axes15 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_phi_AC', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig16, axes16 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_psi_AC', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig17, axes17 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_chi1_AC', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig18, axes18 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_chi2_AC', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig19, axes19 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_phi_BD', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig20, axes20 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_psi_BD', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig21, axes21 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_chi1_BD', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig22, axes22 = plt.subplots(4, 1, sharex='col', figsize=(19, 14), num='pore_chi2_BD', gridspec_kw={'height_ratios': [1, 1, 1, 2]})
-fig23, axes23 = plt.subplots(7, 1, sharex='col', figsize=(19, 23.3), num='water_filter_pore', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 1, 2]})
-axes_list = [axes1, axes2, axes3, axes4, axes5, axes6, axes7, axes8, axes9, axes10, axes11, axes12, axes13, axes14, axes15, axes16, axes17, axes18, axes19, axes20, axes21, axes22, axes23]
-
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
+fig7, axes7 = plt.subplots(3, 1, figsize=(19, 17), num='phi', gridspec_kw={'height_ratios': [5, 3, 3]})  # rows, columns
+fig8, axes8 = plt.subplots(3, 1, figsize=(19, 17), num='psi', gridspec_kw={'height_ratios': [5, 3, 3]})  # rows, columns
+fig9, axes9 = plt.subplots(3, 1, figsize=(19, 13.9), num='chi1', gridspec_kw={'height_ratios': [3, 3, 3]})  # rows, columns
+fig10, axes10 = plt.subplots(3, 1, figsize=(19, 10.8), num='chi2', gridspec_kw={'height_ratios': [1.3, 3, 3]})  # rows, columns
+fig11, axes11 = plt.subplots(7, 1, sharex='col', figsize=(19, 23.3), num='water_filter_pore', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 1, 2]})
+axes_list = [axes1, axes2, axes3, axes4, axes5, axes6, axes7, axes8, axes9, axes10, axes11]
+axes_list_heatmap = [axes7, axes8, axes9, axes10]
+axes_list_noheatmap = [axes1, axes2, axes3, axes4, axes5, axes6, axes11]
 
 ################################################################################################
 
@@ -449,52 +469,51 @@ BDs = BDs.reindex(index=[BDs.index[i] for i in index_order])
 # changes_in_area = area.sub(area.iloc[:, 0], axis=0)
 
 # Plot areas and symmetry of filter and pore over time
-print('>> Plotting areas and symmetry of filter and pore over time...')
+print('>> Plotting diameters and symmetry of filter and pore over time...')
 for row, label in zip(range(5),  reversed(filter_labels)):
     # Areas
     # sns.lineplot(data=area.iloc[row], ax=axes1[row])
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='navy', alpha=0.7, linestyle='--', ax=axes1[row])  # horizontal line to depict initial area
-    axes1[row].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A-C', 'B-D'], colors=['#F3D3BD', '#5E5E5E'])
-    axes1[0].legend(loc='lower right', ncol=2)
-    axes1[row].set_ylabel(label + ' $C\\alpha$', fontsize=label_size)
+    axes1[row].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#F3D3BD', '#5E5E5E'])
+    axes1[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
+    axes1[row].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
     sns.lineplot(data=symmetry.iloc[row], ax=axes4[row], color='black')
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='gray', alpha=0.7, linestyle='--', ax=axes4[row])  # horizontal line to depict perfect symmetry (1)
-    axes4[row].set_ylabel(label + ' $C\\alpha_{AC/BD}$', fontsize=label_size)
+    axes4[row].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes4[row])
-axes1[0].set_title('Combined Diameters of Filter Residues, $C\\alpha$ - ' + name, y=1.04, fontsize=title_size)
-axes4[0].set_title('Ratios of Symmetry between Filter Residues, $C\\alpha$  - ' + name, y=1.04, fontsize=title_size)
+axes1[0].set_title('$C\\alpha$-$C\\alpha$ Distances of Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes4[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry of Filter Residues - ' + name, y=1.04, fontsize=title_size)
 
 for row, label in zip(range(5, 10),  reversed(filter_labels)):
     # Areas
     # sns.lineplot(data=area.iloc[row], ax=axes2[row - 5], color='red')
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='firebrick', alpha=0.7, linestyle='--', ax=axes2[row - 5])  # create horizontal line to depict initial area
-    axes2[row - 5].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A-C', 'B-D'], colors=['#A2A7A5', '#6D696A'])
-    axes2[0].legend(loc='lower right', ncol=2)
-    axes2[row - 5].set_ylabel(label + ' $O$', fontsize=label_size)
+    axes2[row - 5].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#A2A7A5', '#6D696A'])
+    axes2[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
+    axes2[row - 5].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
     sns.lineplot(data=symmetry.iloc[row], ax=axes5[row - 5], color='black')
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='gray', alpha=0.7, linestyle='--', ax=axes5[row - 5])  # horizontal line to depict perfect symmetry (1)
-    axes5[row - 5].set_ylabel(label + ' $O_{AC/BD}$', fontsize=label_size)
+    axes5[row - 5].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes5[row - 5])
-axes2[0].set_title('Combined Diameters of Filter Residues, $O$ - ' + name, y=1.04, fontsize=title_size)
-axes5[0].set_title('Ratios of Symmetry between Filter Residues, $O$ - ' + name, y=1.04, fontsize=title_size)
+axes2[0].set_title('Backbone Carbonyl $O$-$O$ Distances of Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes5[0].set_title('$O$-$O$ Symmetry of Filter Residues - ' + name, y=1.04, fontsize=title_size)
 
 for row, label in zip(range(10, 13), pore_labels):
     # Areas
     # sns.lineplot(data=area.iloc[row], ax=axes3[row - 10])
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='navy', alpha=0.7, linestyle='--', ax=axes3[row - 10])  # create horizontal line to depict initial area
-    axes3[row - 10].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A-C', 'B-D'], colors=['#B1E5F2', '#272635'])
-    axes3[0].legend(loc='lower right', ncol=2)
-    axes3[row - 10].set_ylabel(label + ' $C\\alpha$', fontsize=label_size)
+    axes3[row - 10].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#B1E5F2', '#272635'])
+    axes3[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
+    axes3[row - 10].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
     sns.lineplot(data=symmetry.iloc[row], ax=axes6[row - 10], color='black')
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='seagreen', alpha=0.7, linestyle='--', ax=axes6[row - 10])  # horizontal line to depict perfect symmetry (1)
-    axes6[row - 10].set_ylabel(label + ' $C\\alpha_{AC/BD}$', fontsize=label_size)
+    axes6[row - 10].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes6[row - 10])
-axes3[0].set_title('Combined Diameters of Pore Residues, $C\\alpha$  - ' + name, y=1.04, fontsize=title_size)
-axes6[0].set_title('Ratios of Symmetry between Pore Residues, $C\\alpha$  - ' + name, y=1.04, fontsize=title_size)
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
+axes3[0].set_title('$C\\alpha$-$C\\alpha$ Distances of Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes6[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry of Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
 
 ################################################################################################
 
@@ -502,6 +521,11 @@ print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2
 print('>> Plotting phi, psi, chi1, chi2 angles...')
 # Selectivity filter residues
 angles_data_column_width_format = [(0, 5), (5, 12), (12, 17), (17, 23), (23, 29), (29, 35), (35, 40)]
+
+phi = {}
+psi = {}
+chi1 = {}
+chi2 = {}
 for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
     # Obtain angles data
     angles_data = pd.read_fwf(os.path.join('temp_pdb', name + '_' + segname + '_filter_angles.dat'), header=None, colspecs=angles_data_column_width_format)
@@ -512,53 +536,36 @@ for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
         if label[0] != aa_names.get(ref_residue):
             print('ERROR: Data for filter angles yield residue', aa_names.get(ref_residue), 'while', label[0], 'was expected in the provided labels. Check vmd_cmd_file section in this script.')
             exit(1)
-    # Plot angles, reversed to match visual orientation when viewed by Chimera or VMD
-    for resnum, row, label in zip(reversed(filter_resnum), range(5), reversed(filter_labels)):
-        if segname in ['PROA', 'PROC']:
-            for angle_type, ax in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes7, axes8, axes9, axes10]):
-                if segname == 'PROA':
-                    axe = ax[row]
-                    axe.set_ylabel(label + '$_A$', fontsize=label_size)
-                    color = 'orangered'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                else:
-                    axe = ax[row].twinx()
-                    axe.set_ylabel(label + '$_C$', fontsize=label_size, rotation=270, labelpad=20)
-                    color = 'steelblue'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                # If dataset is filled with NaN, skip
-                if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                    sns.lineplot(x=time, y=normalize_angles(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values, axe), color=color, ax=axe)
-        else:
-            for angle_type, ax in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes11, axes12, axes13, axes14]):
-                if segname == 'PROB':
-                    axe = ax[row]
-                    axe.set_ylabel(label + '$_B$', fontsize=label_size)
-                    color = 'orangered'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                else:
-                    axe = ax[row].twinx()
-                    axe.set_ylabel(label + '$_D$', fontsize=label_size, rotation=270, labelpad=20)
-                    color = 'steelblue'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                # If dataset is filled with NaN, skip
-                if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                    sns.lineplot(x=time, y=normalize_angles(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values, axe), color=color, ax=axe)
-# Set titles
-axes7[0].set_title('Filter Phi Angles - ' + name, y=1.04, fontsize=title_size)
-axes8[0].set_title('Filter Psi Angles - ' + name, y=1.04, fontsize=title_size)
-axes9[0].set_title('Filter Chi1 Angles - ' + name, y=1.04, fontsize=title_size)
-axes10[0].set_title('Filter Chi2 Angles - ' + name, y=1.04, fontsize=title_size)
-axes11[0].set_title('Filter Phi Angles - ' + name, y=1.04, fontsize=title_size)
-axes12[0].set_title('Filter Psi Angles - ' + name, y=1.04, fontsize=title_size)
-axes13[0].set_title('Filter Chi1 Angles - ' + name, y=1.04, fontsize=title_size)
-axes14[0].set_title('Filter Chi2 Angles - ' + name, y=1.04, fontsize=title_size)
+    # Acquire data and place them in a dictionary
+    for angle_type, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [phi, psi, chi1, chi2]):
+        for resnum, row, label in zip(filter_resnum, range(5), filter_labels):
+            # If dataset is filled with NaN, skip plotting
+            if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
+                current_residue = label + '.' + segname[-1]
+                dataset[current_residue] = angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values
+
+# Plot angles
+for angle_type, ax, fig, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes7, axes8, axes9, axes10], [fig7, fig8, fig9, fig10], [phi, psi, chi1, chi2]):
+    dataset = pd.DataFrame(dataset, index=time)
+    # Reindex so that the labels go 1.A, 1.B, 1.C, 2.A, 2.B... instead of 1.A, 2.A, 3.A, 1.B, 2.B,...
+    dataset = dataset.reindex(sorted(dataset.columns, key=lambda x: x[1:-2], reverse=True), axis=1)  # reversed order to match visual orientation when viewed by Chimera or VMD
+    map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
+                      xticklabels=False, yticklabels=1, ax=ax[0],
+                      cmap=sns.color_palette('twilight_shifted', as_cmap=True),
+                      cbar=False)
+    # Add lines to separate 1.A, 1.B, 1.C into 1 group, 2.A, 2.B, 2.C into another group...
+    ax[0].hlines(np.arange(4, len(dataset.columns.values), 4), *ax[0].get_xlim(), colors='white')
+    # Add black frame around heatmap
+    for _, spine in map.spines.items():
+        spine.set_visible(True)
+    print('\r   PROGRESS:     ', angle_type, end=' for SELECTIVITY FILTER', flush=True)
+print('\r   PROGRESS:     ', angle_type, end=' for SELECTIVITY FILTER (DONE)\n', flush=True)
 
 # Pore residues
+phi = {}
+psi = {}
+chi1 = {}
+chi2 = {}
 for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
     # Obtain angles data and concatenate angles data
     Y_angles_data = pd.read_fwf(os.path.join('temp_pdb', name + '_' + segname + '_poreY_angles.dat'), header=None, colspecs=angles_data_column_width_format)
@@ -573,52 +580,36 @@ for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
         if label[0] != aa_names.get(ref_residue):
             print('ERROR: Data for pore angles yield residue', aa_names.get(ref_residue), 'while', label[0], 'was expected in the provided labels. Check vmd_cmd_file section in this script.')
             exit(1)
-    # Plot angles
-    for resnum, row, label in zip(pore_resnum, range(3), pore_labels):
-        if segname in ['PROA', 'PROC']:
-            for angle_type, ax in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes15, axes16, axes17, axes18]):
-                if segname == 'PROA':
-                    axe = ax[row]
-                    axe.set_ylabel(label + '$_A$', fontsize=label_size)
-                    color = 'orangered'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                else:
-                    axe = ax[row].twinx()
-                    axe.set_ylabel(label + '$_C$', fontsize=label_size, rotation=270, labelpad=20)
-                    color = 'steelblue'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                # If dataset is filled with NaN, skip
-                if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                    sns.lineplot(x=time, y=normalize_angles(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values, axe), color=color, ax=axe)
-        else:
-            for angle_type, ax in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes19, axes20, axes21, axes22]):
-                if segname == 'PROB':
-                    axe = ax[row]
-                    axe.set_ylabel(label + '$_B$', fontsize=label_size)
-                    color = 'orangered'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                else:
-                    axe = ax[row].twinx()
-                    axe.set_ylabel(label + '$_D$', fontsize=label_size, rotation=270, labelpad=20)
-                    color = 'steelblue'
-                    axe.yaxis.label.set_color(color)
-                    axe.tick_params(axis='y', colors=color)
-                # If dataset is filled with NaN, skip
-                if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                    sns.lineplot(x=time, y=normalize_angles(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values, axe), color=color, ax=axe)
+    # Acquire data and place them in a dictionary
+    for angle_type, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [phi, psi, chi1, chi2]):
+        for resnum, row, label in zip(pore_resnum, range(3), pore_labels):
+            # If dataset is filled with NaN, skip plotting
+            if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
+                current_residue = label + '.' + segname[-1]
+                dataset[current_residue] = angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values
+
+# Plot angles
+for angle_type, ax, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes7, axes8, axes9, axes10], [phi, psi, chi1, chi2]):
+    dataset = pd.DataFrame(dataset, index=time)
+    # Reindex so that the labels go 1.A, 1.B, 1.C, 2.A, 2.B... instead of 1.A, 2.A, 3.A, 1.B, 2.B,...
+    dataset = dataset.reindex(sorted(dataset.columns, key=lambda x: x[1:-2]), axis=1)
+    map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
+                      xticklabels=False, yticklabels=1, ax=ax[1],
+                      cmap=sns.color_palette('twilight_shifted', as_cmap=True),
+                      cbar=False)
+    # Add lines to separate 1.A, 1.B, 1.C into 1 group, 2.A, 2.B, 2.C into another group...
+    ax[1].hlines(np.arange(4, len(dataset.columns.values), 4), *ax[1].get_xlim(), colors='white')
+    # Add black frame around heatmap
+    for _, spine in map.spines.items():
+        spine.set_visible(True)
+    print('\r   PROGRESS:     ', angle_type, end=' for PORE', flush=True)
+print('\r   PROGRESS:     ', angle_type, end=' for PORE (DONE)\n', flush=True)
+
 # Set titles
-axes15[0].set_title('Pore Phi Angles - ' + name, y=1.04, fontsize=title_size)
-axes16[0].set_title('Pore Psi Angles - ' + name, y=1.04, fontsize=title_size)
-axes17[0].set_title('Pore Chi1 Angles - ' + name, y=1.04, fontsize=title_size)
-axes18[0].set_title('Pore Chi2 Angles - ' + name, y=1.04, fontsize=title_size)
-axes19[0].set_title('Pore Phi Angles - ' + name, y=1.04, fontsize=title_size)
-axes20[0].set_title('Pore Psi Angles - ' + name, y=1.04, fontsize=title_size)
-axes21[0].set_title('Pore Chi1 Angles - ' + name, y=1.04, fontsize=title_size)
-axes22[0].set_title('Pore Chi2 Angles - ' + name, y=1.04, fontsize=title_size)
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
+axes7[0].set_title('Phi Angles of Filter & Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes8[0].set_title('Psi Angles of Selectivity Filter & Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes9[0].set_title('Chi1 Angles of Selectivity Filter & Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes10[0].set_title('Chi2 Angles of Selectivity Filter & Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
 
 ################################################################################################
 
@@ -628,11 +619,10 @@ water_data = pd.read_csv(os.path.join('temp_pdb', name + '_water.dat'), header=N
 water_data.columns = ['Frame', 'Inside Filter', 'Behind Filter$_{A}$', 'Behind Filter$_{B}$', 'Behind Filter$_{C}$', 'Behind Filter$_{D}$', 'Inside Pore']
 
 for row, label in zip(range(6), water_data.columns[1:]):
-    sns.lineplot(x=time, y=water_data[label].values, color='darkviolet', ax=axes23[row])
-    axes23[row].set_ylabel(label, fontsize=label_size)
+    sns.lineplot(x=time, y=water_data[label].values, color='darkviolet', ax=axes11[row])
+    axes11[row].set_ylabel(label, fontsize=label_size)
 
-axes23[0].set_title('Water Count - ' + name, y=1.04, fontsize=title_size)
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
+axes11[0].set_title('Water Count - ' + name, y=1.04, fontsize=title_size)
 
 ################################################################################################
 
@@ -651,18 +641,18 @@ if arg.drug:
             for ax in axes_list:
                 ax[-1].plot(time, com_z.values)
                 ax[-1].fill_between(time, min_z.values, max_z.values, alpha=0.2)
-        print('\rPROGRESS:     ', mol, end=' molecules', flush=True)
-    print('\rPROGRESS:     ', mol, end=' molecules (DONE)\n', flush=True)
+        print('\r   PROGRESS:     ', mol, end=' molecules', flush=True)
+    print('\r   PROGRESS:     ', mol, end=' molecules (DONE)\n', flush=True)
 
     # Plot reference lines
     for ax in axes_list:
         sns.lineplot(x=[time[0], time[-1]], y=[S4] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
         sns.lineplot(x=time, y=bottom_pore, color='red', alpha=0.7, linestyle='--', ax=ax[-1])
         # Annotate reference positions, position of annotation is determined automatically
-        ax[-1].annotate('S4', (time[len(time) // 20], S4 + 0.3), fontsize=label_size - 4, color='blue')
-        ax[-1].annotate('S4', (time[int(len(time) // 20 * 18)], S4 + 0.3), fontsize=label_size - 4, color='blue')
-        ax[-1].annotate('Pore Bottom', (time[len(time) // 20], bottom_pore + 0.3), fontsize=label_size - 4, color='red')
-        ax[-1].annotate('Pore Bottom', (time[int(len(time) // 20 * 17)], bottom_pore + 0.3), fontsize=label_size - 4, color='red')
+        ax[-1].text(arg.time_total // 20, S4 + 0.35, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, S4 + 0.35, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+        ax[-1].text(arg.time_total // 20, bottom_pore + 0.35, 'Pore End', size=label_size - 4, color='red', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, bottom_pore + 0.35, 'Pore End', size=label_size - 4, color='red', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
 else:
     # Plot ion movement over time
     print('>> Plotting ion movement over time...')
@@ -671,10 +661,9 @@ else:
         time_in_range = []
         temp_z = []
         temp_t = []
-        color = next(palette)
 
         for x, y, z, t in zip(x.values, y.values, z.values, time):
-            if (sqrt(x**2 + y**2) <= 10 and S4 <= z <= S0) or (sqrt(x**2 + y**2) <= 15 and (S4 - 8 <= z < S4 or S0 < z <= S0 + 4)):
+            if (sqrt(x**2 + y**2) <= 10 and S4 <= z <= S0) or (sqrt(x**2 + y**2) <= 15 and (S4 - 10 <= z < S4 or S0 < z <= S0 + 15)):
                 if len(temp_z) != -1:
                     temp_z.append(z)
                     temp_t.append(t)
@@ -687,7 +676,9 @@ else:
         if temp_z:
             z_in_range.append(temp_z)
             time_in_range.append(temp_t)
+
         if len(z_in_range) != 0:
+            color = next(palette)
             for t, z in zip(time_in_range, z_in_range):
                 for ax in axes_list:
                     # ax[-1].axvspan(550, 720, color='yellow', alpha=0.2)
@@ -698,8 +689,8 @@ else:
         for ax in axes_list:
             sns.lineplot(x=[time[0], time[-1]], y=[z] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
             # Annotate S positions, position of annotation is determined automatically
-            ax[-1].annotate(label, (time[len(time) // 20], z + 0.3), fontsize=label_size - 4, color='blue')
-            ax[-1].annotate(label, (time[int(len(time) // 20 * 18)], z + 0.3), fontsize=label_size - 4, color='blue')
+            ax[-1].text(arg.time_total // 20, z + 0.35, label, size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+            ax[-1].text(arg.time_total // 20 * 19, z + 0.35, label, size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
 
 # Set labels
 for ax in axes_list:
@@ -708,9 +699,47 @@ for ax in axes_list:
     else:
         ax[-1].set_ylabel('$K^+ z-pos.$ (Å)', fontsize=label_size)
     ax[-1].set_xlabel(arg.x_label, fontsize=label_size)
+
+for ax in axes_list_heatmap:
+    ax[-1].xaxis.set_minor_locator(AutoMinorLocator())
+    ax[-1].set(xlim=(0, time[-1]))
+    # Color bar
+    axins = inset_axes(ax[0],
+                       width=0.3,
+                       height=5,
+                       loc='upper right',
+                       bbox_to_anchor=(0.04, 0, 1, 1),  # (x0, y0, width, height) where (x0,y0) are the lower left corner coordinates of the bounding box
+                       bbox_transform=ax[0].transAxes,
+                       borderpad=0)
+    cb1 = matplotlib.colorbar.ColorbarBase(axins, cmap=sns.color_palette('twilight_shifted', as_cmap=True),
+                                           norm=matplotlib.colors.Normalize(vmin=-180, vmax=180),
+                                           orientation='vertical')
+    cb1.set_label('Angles (°)')
+    # Generate X tick labels for heatmap (heatmap order is categorical, not numeric, so default xticks will be 103, 134, 162,... instead of 100, 200, 300,...)
+    major_ticks = list(ax[-1].get_xticks(minor=False))[:-1]  # Skip last one because it is not plotted for some reason
+    minor_ticks = list(ax[-1].get_xticks(minor=True))
+    major_xtick_locations = []
+    major_xtick_labels = []
+    minor_xtick_locations = []
+    for t in major_ticks:
+        time_index = closest(time, t)
+        major_xtick_locations.append(time_index)
+        major_xtick_labels.append(int(t))
+    for t in minor_ticks:
+        time_index = closest(time, t)
+        minor_xtick_locations.append(time_index)
+    # Set xticks for selectivity filter residues
+    ax[0].set_xticks(major_xtick_locations)
+    ax[0].set_xticklabels(major_xtick_labels)
+    ax[0].set_xticks(minor_xtick_locations, minor=True)
+    # Set xticks for pore residues
+    ax[1].set_xticks(major_xtick_locations)
+    ax[1].set_xticklabels(major_xtick_labels)
+    ax[1].set_xticks(minor_xtick_locations, minor=True)
+
+for ax in axes_list_noheatmap:
     for i in ax:
         i.xaxis.set_minor_locator(AutoMinorLocator())
-print('   Memory usage: ', round(psutil.Process(os.getpid()).memory_percent(), 2), '%', sep='')
 
 ################################################################################################
 
@@ -758,12 +787,12 @@ else:
         ax[-1].set(ylim=(S4 - 7, S0 + 3))
 
 # Water in filter and pore
-axes23[0].set(ylim=(-0.1, 5.1))
-axes23[1].set(ylim=(-0.1, 10.1))
-axes23[2].set(ylim=(-0.1, 10.1))
-axes23[3].set(ylim=(-0.1, 10.1))
-axes23[4].set(ylim=(-0.1, 10.1))
-axes23[5].set(ylim=(-0.1, 150.1))
+axes11[0].set(ylim=(-0.1, 5.1))
+axes11[1].set(ylim=(-0.1, 10.1))
+axes11[2].set(ylim=(-0.1, 10.1))
+axes11[3].set(ylim=(-0.1, 10.1))
+axes11[4].set(ylim=(-0.1, 10.1))
+axes11[5].set(ylim=(-0.1, 150.1))
 
 ################################################################################################
 
@@ -771,12 +800,15 @@ axes23[5].set(ylim=(-0.1, 150.1))
 print('\nPlots are saved as:')
 for figure in ['filterCA_diameters', 'filterO_diameters', 'poreCA_diameters',
                'filterCA_symmetry', 'filterO_symmetry', 'poreCA_symmetry',
-               'filter_phi_AC', 'filter_psi_AC', 'filter_chi1_AC', 'filter_chi2_AC',
-               'filter_phi_BD', 'filter_psi_BD', 'filter_chi1_BD', 'filter_chi2_BD',
-               'pore_phi_AC', 'pore_psi_AC', 'pore_chi1_AC', 'pore_chi2_AC',
-               'pore_phi_BD', 'pore_psi_BD', 'pore_chi1_BD', 'pore_chi2_BD',
+               'phi', 'psi', 'chi1', 'chi2',
                'water_filter_pore']:
+
     plt.figure(figure)
+
+    # if figure in ['phi', 'psi', 'chi1', 'chi2']:
+    #     sm = plt.cm.ScalarMappable(cmap=sns.color_palette('twilight_shifted', as_cmap=True), norm=matplotlib.colors.Normalize(vmin=-180, vmax=180))
+    #     plt.colorbar(sm)
+
     plt.savefig(os.path.join('figures', name + '_' + figure + '.png'), dpi=300)
     print(os.path.join('figures', name + '_' + figure + '.png'))
     if arg.split > 1:
