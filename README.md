@@ -24,7 +24,8 @@ Python3, VMD
                                   -d [simulation trajectory file (default=.dcd in current dir)]
                                   -t [total simulation time of the whole trajectory (default = 1000)]
                                   -e [analyze the simulation to this frame (default = -1 i.e. all)]
-                                  -s [split each plot into # of smaller plots covering different time periods (default = 1 i.e. do not split)]
+                                  -s [step to analyze trajectory file (default = 1 i.e. every frame accounted for, no skipping)
+                                  --split [split each plot into # of smaller plots covering different time periods (default = 1 i.e. do not split)]
                                   --drug [set to the segname of the drug to analyze drug movement in the pore as opposed to ion movement in the filter]
   ```
   Optional arguments:
@@ -38,4 +39,4 @@ Python3, VMD
 
 In a folder containing one .psf file, one .dcd file, and analysis scripts of a 1000 ns long ion conduction simulation: _python3 -t 1000_
 
-In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 -t 3000 --drug HETB -s 3_
+In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 -t 3000 --drug HETB --split 3_
