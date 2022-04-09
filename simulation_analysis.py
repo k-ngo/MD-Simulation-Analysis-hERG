@@ -51,7 +51,7 @@ plt.rcParams.update({'figure.max_open_warning': 0})
 
 # Configurations
 PDB_column_width_format = [(0, 4), (4, 11), (11, 16), (16, 20), (20, 22), (22, 26), (26, 38), (38, 46), (46, 54), (54, 60), (60, 66), (66, 90)]
-parser = argparse.ArgumentParser(description='Construct intermolecular time series contact map')
+parser = argparse.ArgumentParser(description='hERG Simulation Analysis')
 parser.add_argument('-p', '--psf',
                     default=glob.glob('*.psf')[0],
                     dest='psf', action='store',
