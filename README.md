@@ -31,12 +31,12 @@ Python3, VMD
   Optional arguments:
   ```
                                   -x [x label (default='Time (ns)')]
-                                  --runcommand [True/False, run VMD commands to generate input data, change if there is no need to calculate data again (default=True)]
+                                  --skipcommand [skip running VMD commands to generate input data, change if there is no need to calculate data again (default=True)]
                                   --labelsize [label size (default=20)]
   ```
 
 **Examples:**
 
-In a folder containing one .psf file, one .dcd file, and analysis scripts of a 1000 ns long ion conduction simulation: _python3 -t 1000_
+In a folder containing one .psf file, one .dcd file, and analysis scripts of a 1000 ns long ion conduction simulation: _python3 simulation_analysis.py -t 1000_
 
-In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 -t 3000 --drug HETB --split 3_
+In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: _python3 simulation_analysis.py -t 3000 --drug HETB --split 3_
