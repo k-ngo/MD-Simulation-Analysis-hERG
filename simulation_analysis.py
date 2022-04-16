@@ -83,11 +83,10 @@ parser.add_argument('--split',
 parser.add_argument('-x', '--xlabel',
                     default='Time (ns)',
                     dest='x_label', action='store',
-                    help='x label')
-parser.add_argument('--runcommand',
-                    default=True,
-                    dest='run_command', action='store',
-                    help='run VMD commands to generate input data, only set to False if the script has already been ran at least once')
+                    help='label on x-axis')
+parser.add_argument('--skipcommand',
+                    dest='skip_command', action='store_true',
+                    help='if toggled, skip running VMD commands to generate input data, only set if the script has already been ran at least once')
 parser.add_argument('--labelsize',
                     default=20,
                     dest='size', action='store', type=float,
@@ -203,7 +202,7 @@ for script in ['calculate_dihedrals.tcl', 'dihedral_angles_atom_names.tcl', 'por
 # Load simulation trajectory and extract data
 vmd_cmd_file = arg.dcd + '_vmd_cmd.tcl'
 
-if arg.run_command == True:
+if not arg.skip_command:
     with open(vmd_cmd_file, 'w+') as f:
         # Load trajectory files
         f.write('mol new ' + arg.psf + ' type psf first 0 last -1 step 1 filebonds 1 autobonds 1 waitfor all\n')
@@ -212,7 +211,7 @@ if arg.run_command == True:
         # Center protein
         f.write('source prot_center.tcl\n')
 
-        # Obtain S0, S4 and get water in pore and filter (this section needs to be first to analyze first frame)
+        # Obtain initial positions of K+ binding positions S0, S4 (this section needs to be first to analyze first frame)
         f.write('set PHE_O [atomselect top "segname PROA and sequence SVGF and resname PHE and name O" frame 0]\n')
         f.write('set PHE_O_z [$PHE_O get z]\n')
         f.write('set GLY_O [atomselect top "segname PROA and sequence SVGF and resname GLY and name O" frame 0]\n')
@@ -224,14 +223,26 @@ if arg.run_command == True:
         f.write('set SER_OG [atomselect top "segname PROA and sequence SVGFG and resname SER and name OG" frame 0]\n')
         f.write('set SER_OG_z [$SER_OG get z]\n')
         f.write('set S4 [expr {($SER_O_z + $SER_OG_z) / 2}]\n')
-        #
+
+        # Obtain initial position of when the pore ends based on the last LYS residue
         f.write('set LYS_CA [atomselect top "segname PROA and sequence QRL and resname LEU and name CA" frame 0]\n')
         f.write('set bottomPore [$LYS_CA get z]\n')
         f.write('set bottomPoreLocation [open "' + os.path.join('temp_pdb', name + '_bottom_pore.dat') + '" w]\n')
         f.write('puts $bottomPoreLocation "$bottomPore"\n')
         f.write('close $bottomPoreLocation\n')
 
-        f.write('set outputname "' + os.path.join('temp_pdb', name+ '_water.dat') + '"\n')
+        # If applicable, obtain initial position of drug binding pore residues (TYR, PHE, SER)
+        if arg.drug:
+            f.write('set drug "' + arg.drug + '"\n')
+            f.write('set drugBindingPoreResLocation [open "' + os.path.join('temp_pdb', name + '_drugBindingPoreRes.dat') + '" w]\n')
+            f.write('set drug_tyr [atomselect top "sequence YAS and resname TYR" frame 0]\n')
+            f.write('set drug_phe [atomselect top "sequence IFGNVS and resname PHE" frame 0]\n')
+            f.write('set drug_ser [atomselect top "sequence IFGNVS and resname SER" frame 0]\n')
+            f.write('puts $drugBindingPoreResLocation "[lindex [measure center $drug_tyr weight mass] 2],[lindex [measure center $drug_phe weight mass] 2],[lindex [measure center $drug_ser weight mass] 2]"\n')
+            f.write('close $drugBindingPoreResLocation\n')
+
+        # Obtain water in pore and filter
+        f.write('set outputname "' + os.path.join('temp_pdb', name + '_water.dat') + '"\n')
         f.write('source pore_water.tcl\n')
 
         #  Obtain coordinates of atoms in filter and pore
@@ -252,7 +263,6 @@ if arg.run_command == True:
 
         # If applicable, get drug coordinates, else get K+ coordinates
         if arg.drug:
-            f.write('set drug "' + arg.drug + '"\n')
             f.write('set outputname_max_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_max_z.dat') + '"\n')
             f.write('set outputname_com_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_com_z.dat') + '"\n')
             f.write('set outputname_min_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_min_z.dat') + '"\n')
@@ -541,7 +551,7 @@ for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
         for resnum, row, label in zip(filter_resnum, range(5), filter_labels):
             # If dataset is filled with NaN, skip plotting
             if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                current_residue = label + '.' + segname[-1]
+                current_residue = label + ':' + segname[-1]
                 dataset[current_residue] = angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values
 
 # Plot angles
@@ -549,14 +559,14 @@ for angle_type, ax, fig, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes7, 
     dataset = pd.DataFrame(dataset, index=time)
     # Reindex so that the labels go 1.A, 1.B, 1.C, 2.A, 2.B... instead of 1.A, 2.A, 3.A, 1.B, 2.B,...
     dataset = dataset.reindex(sorted(dataset.columns, key=lambda x: x[1:-2], reverse=True), axis=1)  # reversed order to match visual orientation when viewed by Chimera or VMD
-    map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
-                      xticklabels=False, yticklabels=1, ax=ax[0],
-                      cmap=sns.color_palette('twilight_shifted', as_cmap=True),
-                      cbar=False)
+    my_map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
+                         xticklabels=False, yticklabels=1, ax=ax[0],
+                         cmap=sns.color_palette('twilight_shifted', as_cmap=True),
+                         cbar=False)
     # Add lines to separate 1.A, 1.B, 1.C into 1 group, 2.A, 2.B, 2.C into another group...
     ax[0].hlines(np.arange(4, len(dataset.columns.values), 4), *ax[0].get_xlim(), colors='white')
     # Add black frame around heatmap
-    for _, spine in map.spines.items():
+    for _, spine in my_map.spines.items():
         spine.set_visible(True)
     print('\r   PROGRESS:     ', angle_type, end=' for SELECTIVITY FILTER', flush=True)
 print('\r   PROGRESS:     ', angle_type, end=' for SELECTIVITY FILTER (DONE)\n', flush=True)
@@ -585,7 +595,7 @@ for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
         for resnum, row, label in zip(pore_resnum, range(3), pore_labels):
             # If dataset is filled with NaN, skip plotting
             if not np.isnan(angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values).all():
-                current_residue = label + '.' + segname[-1]
+                current_residue = label + ':' + segname[-1]
                 dataset[current_residue] = angles_data.loc[angles_data['ResNum'] == resnum, angle_type].values
 
 # Plot angles
@@ -593,14 +603,14 @@ for angle_type, ax, dataset in zip(['Phi', 'Psi', 'Chi1', 'Chi2'], [axes7, axes8
     dataset = pd.DataFrame(dataset, index=time)
     # Reindex so that the labels go 1.A, 1.B, 1.C, 2.A, 2.B... instead of 1.A, 2.A, 3.A, 1.B, 2.B,...
     dataset = dataset.reindex(sorted(dataset.columns, key=lambda x: x[1:-2]), axis=1)
-    map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
-                      xticklabels=False, yticklabels=1, ax=ax[1],
-                      cmap=sns.color_palette('twilight_shifted', as_cmap=True),
-                      cbar=False)
+    my_map = sns.heatmap(dataset.T, vmin=-180, vmax=180,
+                         xticklabels=False, yticklabels=1, ax=ax[1],
+                         cmap=sns.color_palette('twilight_shifted', as_cmap=True),
+                         cbar=False)
     # Add lines to separate 1.A, 1.B, 1.C into 1 group, 2.A, 2.B, 2.C into another group...
     ax[1].hlines(np.arange(4, len(dataset.columns.values), 4), *ax[1].get_xlim(), colors='white')
     # Add black frame around heatmap
-    for _, spine in map.spines.items():
+    for _, spine in my_map.spines.items():
         spine.set_visible(True)
     print('\r   PROGRESS:     ', angle_type, end=' for PORE', flush=True)
 print('\r   PROGRESS:     ', angle_type, end=' for PORE (DONE)\n', flush=True)
@@ -644,15 +654,31 @@ if arg.drug:
         print('\r   PROGRESS:     ', mol, end=' molecules', flush=True)
     print('\r   PROGRESS:     ', mol, end=' molecules (DONE)\n', flush=True)
 
+    # Obtain center of Mass in z of drug binding pore residues
+    with open(os.path.join('temp_pdb', name + '_drugBindingPoreRes.dat'), 'r') as f:
+        com_z_pore_res = list(map(float, f.readline().strip().split(',')))
+
     # Plot reference lines
     for ax in axes_list:
         sns.lineplot(x=[time[0], time[-1]], y=[S4] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
         sns.lineplot(x=time, y=bottom_pore, color='red', alpha=0.7, linestyle='--', ax=ax[-1])
         # Annotate reference positions, position of annotation is determined automatically
-        ax[-1].text(arg.time_total // 20, S4 + 0.35, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, S4 + 0.35, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
-        ax[-1].text(arg.time_total // 20, bottom_pore + 0.35, 'Pore End', size=label_size - 4, color='red', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, bottom_pore + 0.35, 'Pore End', size=label_size - 4, color='red', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+        ax[-1].text(arg.time_total // 20, S4, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, S4, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20, bottom_pore, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, bottom_pore, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        # Annotate Center of Mass in z of drug binding pore residues in the first frame
+        ax[-1].text(arg.time_total // 20, com_z_pore_res[0], pore_labels[0], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[0], pore_labels[0], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[0]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+
+        ax[-1].text(arg.time_total // 20, com_z_pore_res[1], pore_labels[1], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[1], pore_labels[1], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[1]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+
+        ax[-1].text(arg.time_total // 20, com_z_pore_res[2], pore_labels[2], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[2], pore_labels[2], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[2]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
 else:
     # Plot ion movement over time
     print('>> Plotting ion movement over time...')
@@ -689,8 +715,8 @@ else:
         for ax in axes_list:
             sns.lineplot(x=[time[0], time[-1]], y=[z] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
             # Annotate S positions, position of annotation is determined automatically
-            ax[-1].text(arg.time_total // 20, z + 0.35, label, size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
-            ax[-1].text(arg.time_total // 20 * 19, z + 0.35, label, size=label_size - 4, color='blue', ha='center', path_effects=[pe.withStroke(linewidth=4, foreground='white')])
+            ax[-1].text(arg.time_total // 20, z, label, size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+            ax[-1].text(arg.time_total // 20 * 19, z, label, size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
 
 # Set labels
 for ax in axes_list:
@@ -716,17 +742,20 @@ for ax in axes_list_heatmap:
                                            orientation='vertical')
     cb1.set_label('Angles (°)')
     # Generate X tick labels for heatmap (heatmap order is categorical, not numeric, so default xticks will be 103, 134, 162,... instead of 100, 200, 300,...)
-    major_ticks = list(ax[-1].get_xticks(minor=False))[:-1]  # Skip last one because it is not plotted for some reason
-    minor_ticks = list(ax[-1].get_xticks(minor=True))
+    major_xticks = list(ax[-1].get_xticks(minor=False))[:-1]  # Skip last one because it is not plotted for some reason
+    minor_xticks = list(ax[-1].get_xticks(minor=True))
     major_xtick_locations = []
     major_xtick_labels = []
     minor_xtick_locations = []
-    for t in major_ticks:
-        time_index = closest(time, t)
+    # When I wrote this code, only God and I knew how it worked. Now, only God knows how it works.
+    for t in major_xticks:
+        correction_factor = 1 / len(time) * closest(time, t)
+        time_index = round(len(time) * t / arg.time_total + correction_factor, 2)
         major_xtick_locations.append(time_index)
         major_xtick_labels.append(int(t))
-    for t in minor_ticks:
-        time_index = closest(time, t)
+    for t in minor_xticks:
+        correction_factor = 1 / len(time) * closest(time, t)
+        time_index = round(len(time) * t / arg.time_total + correction_factor, 2)
         minor_xtick_locations.append(time_index)
     # Set xticks for selectivity filter residues
     ax[0].set_xticks(major_xtick_locations)
@@ -745,38 +774,37 @@ for ax in axes_list_noheatmap:
 
 # Set limits
 # Filter CA radii
-# axes1[0].set(ylim=(20, 250))
-# axes1[1].set(ylim=(20, 150))
-# axes1[2].set(ylim=(20, 70))
-# axes1[3].set(ylim=(40, 63))
-# axes1[4].set(ylim=(50, 80))
+axes1[0].set(ylim=(0, 40))
+axes1[1].set(ylim=(0, 25))
+axes1[2].set(ylim=(0, 22))
+axes1[3].set(ylim=(0, 22))
+axes1[4].set(ylim=(0, 22))
 
 # Filter O radii
-# axes2[0].set(ylim=(30, 290))
-# axes2[1].set(ylim=(0, 200))
-# axes2[2].set(ylim=(10, 80))
-# axes2[3].set(ylim=(10, 40))
-# axes2[4].set(ylim=(10, 30))
+axes2[0].set(ylim=(0, 40))
+axes2[1].set(ylim=(0, 35))
+axes2[2].set(ylim=(0, 20))
+axes2[3].set(ylim=(0, 17))
+axes2[4].set(ylim=(0, 17))
 
 # Filter CA symmetry
-# axes4[0].set(ylim=(0.6, 2.5))
-# axes4[1].set(ylim=(0.6, 1.5))
-# axes4[2].set(ylim=(0.6, 1.5))
-# axes4[3].set(ylim=(0.6, 1.5))
-# axes4[4].set(ylim=(0.6, 1.5))
+axes4[0].set(ylim=(0.6, 2.5))
+axes4[1].set(ylim=(0.6, 1.5))
+axes4[2].set(ylim=(0.6, 1.5))
+axes4[3].set(ylim=(0.6, 1.5))
+axes4[4].set(ylim=(0.6, 1.5))
 
 # Filter O symmetry
-# axes5[0].set(ylim=(0.6, 2.5))
-# axes5[1].set(ylim=(0.6, 1.8))
-# axes5[2].set(ylim=(0.4, 2.5))
-# axes5[3].set(ylim=(0.6, 2.5))
-# axes5[4].set(ylim=(0.6, 1.5))
+axes5[0].set(ylim=(0.6, 2.5))
+axes5[1].set(ylim=(0.6, 1.8))
+axes5[2].set(ylim=(0.4, 2.5))
+axes5[3].set(ylim=(0.6, 2.5))
+axes5[4].set(ylim=(0.6, 1.5))
 
 # # Pore radii
-# axes3[0].set(ylim=(140, 290))
-# axes3[1].set(ylim=(170, 270))
-# axes3[2].set(ylim=(260, 410))
-#
+axes3[0].set(ylim=(0, 50))
+axes3[1].set(ylim=(0, 50))
+axes3[2].set(ylim=(0, 40))
 
 # Ions
 if arg.drug:
