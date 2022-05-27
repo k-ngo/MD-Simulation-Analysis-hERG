@@ -42,3 +42,16 @@ _python3 simulation_analysis.py -t 1000_
 
 In a folder containing one .psf file, one .dcd file, and analysis scripts of a 3000 ns long drug flooding simulation. The user wants to split each plot into three smaller plots covering different time periods: 
 _python3 simulation_analysis.py -t 3000 --drug HETB --split 3_
+
+![Screenshot](example_output/phi.png)
+![Screenshot](example_output/psi.png)
+![Screenshot](example_output/chi1.png)
+![Screenshot](example_output/chi2.png)
+![Screenshot](example_output/filterCA_diameters.png)
+![Screenshot](example_output/filterCA_symmetry.png)
+![Screenshot](example_output/filterO_diameters.png)
+![Screenshot](example_output/filterO_symmetry.png)
+![Screenshot](example_output/poreCA_diameters.png)
+![Screenshot](example_output/poreCA_symmetry.png)
+![Screenshot](example_output/water_filter_pore.png)
+
