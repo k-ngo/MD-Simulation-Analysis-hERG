@@ -13,9 +13,14 @@ from itertools import cycle
 from warnings import simplefilter
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import matplotlib.patheffects as pe
+from functools import reduce
 matplotlib.use('Agg')
-simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
-plt.rcParams.update({'figure.max_open_warning': 0})
+simplefilter(action='ignore', category=pd.errors.PerformanceWarning)  # ignore deprecated classes and functions warnings
+simplefilter(action='ignore', category=FutureWarning)
+simplefilter(action='ignore', category=UserWarning)
+plt.rcParams.update({'figure.max_open_warning': 0})  # ignore warnings when creating multiple figures
+sns.set_context('talk')
+
 
 #######################################
 # Automatic Analysis of MD Simulation #
@@ -40,11 +45,11 @@ plt.rcParams.update({'figure.max_open_warning': 0})
 #   python3 simulation_analysis.py  -p [protein structure file (default=.psf in current dir)]
 #                                   -d [simulation trajectory file (default=.dcd in current dir)]
 #                                   -t [total simulation time of the whole trajectory (default = 1000)]
+#   Optional arguments:
+#                                   --drug [set to the segname of the drug to analyze drug movement in the pore as opposed to ion movement in the filter]
 #                                   -e [analyze the simulation to this frame (default = -1 i.e. all)]
 #                                   -s [step to read trajectory file (default = 1 i.e. do not skip any frame, 2 to skip every 1 frame)]
 #                                   --split [split each plot into # of smaller plots covering different time periods (default = 1 i.e. do not split)]
-#                                   --drug [set to the segname of the drug to analyze drug movement in the pore as opposed to ion movement in the filter]
-#   Optional arguments:
 #                                   -x [x label (default='Time (ns)')]
 #                                   --runcommand [True/False, run VMD commands to generate input data, change if there is no need to calculate data again (default=True)]
 #                                   --labelsize [label size (default=20)]
@@ -189,18 +194,18 @@ if arg.drug:
     print('Drug Seg     :', arg.drug, end='\n\n')
 
 # Create folders to store data and output
-os.makedirs('temp_pdb', exist_ok=True)
-os.makedirs('saved_results', exist_ok=True)
-os.makedirs('figures', exist_ok=True)
+os.makedirs('temp_pdb_' + name, exist_ok=True)
+os.makedirs('saved_results_' + name, exist_ok=True)
+os.makedirs('figures_' + name, exist_ok=True)
 
 # Check required files
-for script in ['calculate_dihedrals.tcl', 'dihedral_angles_atom_names.tcl', 'pore_water.tcl', 'prot_center.tcl', 'drug_movement.tcl']:
-    if not os.path.exists(script):
+for script in ['calculate_dihedrals.tcl', 'dihedral_angles_atom_names.tcl', 'pore_water.tcl', 'prot_center.tcl', 'drug_movement.tcl', 'drug_binding_residues.tcl', 'hole2']:
+    if not os.path.exists(os.path.join('aux_scripts', script)):
         print('ERROR: Required script', script, 'not found in current directory.')
         exit(1)
 
 # Load simulation trajectory and extract data
-vmd_cmd_file = arg.dcd + '_vmd_cmd.tcl'
+vmd_cmd_file = name + '_vmd_cmd.tcl'
 
 if not arg.skip_command:
     with open(vmd_cmd_file, 'w+') as f:
@@ -209,7 +214,7 @@ if not arg.skip_command:
         f.write('mol addfile ' + arg.dcd + ' type ' + arg.dcd.split('.')[-1] + ' first 0 last ' + str(arg.end_frame) + ' step ' + str(arg.step) + ' filebonds 1 autobonds 1 waitfor all\n')
 
         # Center protein
-        f.write('source prot_center.tcl\n')
+        f.write('source aux_scripts/prot_center.tcl\n')
 
         # Obtain initial positions of K+ binding positions S0, S4 (this section needs to be first to analyze first frame)
         f.write('set PHE_O [atomselect top "segname PROA and sequence SVGF and resname PHE and name O" frame 0]\n')
@@ -224,66 +229,108 @@ if not arg.skip_command:
         f.write('set SER_OG_z [$SER_OG get z]\n')
         f.write('set S4 [expr {($SER_O_z + $SER_OG_z) / 2}]\n')
 
-        # Obtain initial position of when the pore ends based on the last LYS residue
-        f.write('set LYS_CA [atomselect top "segname PROA and sequence QRL and resname LEU and name CA" frame 0]\n')
-        f.write('set bottomPore [$LYS_CA get z]\n')
-        f.write('set bottomPoreLocation [open "' + os.path.join('temp_pdb', name + '_bottom_pore.dat') + '" w]\n')
-        f.write('puts $bottomPoreLocation "$bottomPore"\n')
-        f.write('close $bottomPoreLocation\n')
-
-        # If applicable, obtain initial position of drug binding pore residues (TYR, PHE, SER)
-        if arg.drug:
-            f.write('set drug "' + arg.drug + '"\n')
-            f.write('set drugBindingPoreResLocation [open "' + os.path.join('temp_pdb', name + '_drugBindingPoreRes.dat') + '" w]\n')
-            f.write('set drug_tyr [atomselect top "sequence YAS and resname TYR" frame 0]\n')
-            f.write('set drug_phe [atomselect top "sequence IFGNVS and resname PHE" frame 0]\n')
-            f.write('set drug_ser [atomselect top "sequence IFGNVS and resname SER" frame 0]\n')
-            f.write('puts $drugBindingPoreResLocation "[lindex [measure center $drug_tyr weight mass] 2],[lindex [measure center $drug_phe weight mass] 2],[lindex [measure center $drug_ser weight mass] 2]"\n')
-            f.write('close $drugBindingPoreResLocation\n')
-
-        # Obtain water in pore and filter
-        f.write('set outputname "' + os.path.join('temp_pdb', name + '_water.dat') + '"\n')
-        f.write('source pore_water.tcl\n')
-
-        #  Obtain coordinates of atoms in filter and pore
-        # f.write('set sel [atomselect top "(sequence SVGFG and name CA) or (sequence SVGFG and name O) or (sequence YASIFGNVS and resname TYR PHE SER and name CA)"]\n')
-        f.write('set sel [atomselect top "(sequence SVGFG and name CA) or (sequence SVGFG and name O) or (((sequence YAS and resname TYR) or (sequence IFGNVS and resname PHE SER)) and name CA)"]\n')
-        f.write('animate write pdb ' + os.path.join('temp_pdb', name + '_filter_and_pore_area.pdb') + ' skip 1 sel $sel\n')
-
         # Obtain S0-S4 K+ binding positions in filter
         f.write('set sel [atomselect top "segname PROA and sequence SVGFG and oxygen"]\n')
-        f.write('animate write pdb ' + os.path.join('temp_pdb', name + '_S0-S4.pdb') + ' beg 0 end 0 skip 1 sel $sel\n')
+        f.write('animate write pdb ' + os.path.join('temp_pdb_' + name, 'S0-S4.pdb') + ' beg 0 end -1 skip 1 sel $sel\n')
+
+        # Obtain positions of when the pore ends based on the last LYS residue
+        f.write('set LYS_CA [atomselect top "segname PROA and sequence QRL and resname LEU and name CA"]\n')
+        f.write('animate write pdb ' + os.path.join('temp_pdb_' + name, 'pore_end.pdb') + ' beg 0 end -1 skip 1 sel $LYS_CA\n')
+        f.write('set LYS_CA [atomselect top "segname PROA and sequence QRL and resname LEU and name CA" frame 0]\n')
+        f.write('set bottomPore [$LYS_CA get z]\n')
+
+        # Obtain positions of drug binding pore residues (TYR, PHE, SER)
+        f.write('set drugBindingPoreResLocation [open "' + os.path.join('temp_pdb_' + name, 'drugBindingPoreRes.dat') + '" w]\n')
+        f.write('source aux_scripts/drug_binding_residues.tcl\n')
+
+        if arg.drug:
+            f.write('set drug "' + arg.drug + '"\n')
+
+        # Obtain water in pore and filter
+        f.write('set outputname "' + os.path.join('temp_pdb_' + name, 'water.dat') + '"\n')
+        f.write('source aux_scripts/pore_water.tcl\n')
+
+        # Obtain coordinates of atoms in filter and pore
+        # f.write('set sel [atomselect top "(sequence SVGFG and name CA) or (sequence SVGFG and name O) or (sequence YASIFGNVS and resname TYR PHE SER and name CA)"]\n')
+        f.write('set sel [atomselect top "(sequence SVGFG and name CA) or (sequence SVGFG and name O) or (((sequence YAS and resname TYR) or (sequence IFGNVS and resname PHE SER)) and name CA)"]\n')
+        f.write('animate write pdb ' + os.path.join('temp_pdb_' + name, 'filter_and_pore_area.pdb') + ' skip 1 sel $sel\n')
 
         # Calculate phi/psi/chi1/chi2 angles
-        f.write('source calculate_dihedrals.tcl\n')
+        f.write('source aux_scripts/calculate_dihedrals.tcl\n')
+        f.write('source aux_scripts/dihedral_angles_atom_names.tcl\n')
         for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
-            f.write('print_sidechain_dihedrals ' + segname + ' "sequence SVGFG" top "' + os.path.join('temp_pdb', name + '_' + segname + '_filter_angles.dat') + '"\n')
-            f.write('print_sidechain_dihedrals ' + segname + ' "sequence YASIFGNVS and resname TYR" top "' + os.path.join('temp_pdb', name + '_' + segname + '_poreY_angles.dat') + '"\n')
-            f.write('print_sidechain_dihedrals ' + segname + ' "sequence IFGNVS and resname PHE SER" top "' + os.path.join('temp_pdb', name + '_' + segname + '_poreFS_angles.dat') + '"\n')
+            f.write('print_sidechain_dihedrals ' + segname + ' "sequence SVGFG" top "' + os.path.join('temp_pdb_' + name, segname + '_filter_angles.dat') + '"\n')
+            f.write('print_sidechain_dihedrals ' + segname + ' "sequence YASIFGNVS and resname TYR" top "' + os.path.join('temp_pdb_' + name, segname + '_poreY_angles.dat') + '"\n')
+            f.write('print_sidechain_dihedrals ' + segname + ' "sequence IFGNVS and resname PHE SER" top "' + os.path.join('temp_pdb_' + name, segname + '_poreFS_angles.dat') + '"\n')
 
         # If applicable, get drug coordinates, else get K+ coordinates
         if arg.drug:
-            f.write('set outputname_max_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_max_z.dat') + '"\n')
-            f.write('set outputname_com_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_com_z.dat') + '"\n')
-            f.write('set outputname_min_z "' + os.path.join('temp_pdb', name + '_' + arg.drug + '_min_z.dat') + '"\n')
-            f.write('source drug_movement.tcl\n')
+            f.write('set outputname_max_z "' + os.path.join('temp_pdb_' + name, arg.drug + '_max_z.dat') + '"\n')
+            f.write('set outputname_com_z "' + os.path.join('temp_pdb_' + name, arg.drug + '_com_z.dat') + '"\n')
+            f.write('set outputname_min_z "' + os.path.join('temp_pdb_' + name, arg.drug + '_min_z.dat') + '"\n')
+            f.write('source aux_scripts/drug_movement.tcl\n')
         else:
             f.write('set sel [atomselect top {name "K\\+" or name "POT"}]\n')
-            f.write('animate write pdb ' + os.path.join('temp_pdb', name + '_potassium_ions.pdb') + ' skip 1 sel $sel\n')
+            f.write('animate write pdb ' + os.path.join('temp_pdb_' + name, 'potassium_ions.pdb') + ' skip 1 sel $sel\n')
 
         f.write('exit')
 
     sp.call(['/bin/bash', '-i', '-c', 'vmd -dispdev text -e ' + vmd_cmd_file], stdin=sp.PIPE)
 
+################################################################################################
+
+# Obtain positions of K+ binding in the SF (S0, S1, S2, S3, S4) as well as location of the bottom of the pore (defined as "sequence QRL and resname LEU and name CA")
+S0 = []
+S1 = []
+S2 = []
+S3 = []
+S4 = []
+S5 = []
+for frame in pd.read_fwf(os.path.join('temp_pdb_' + name, 'S0-S4.pdb'), chunksize=6 + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
+    # Delete last line (containing just 'END'), reset index to 0, and name columns
+    frame.drop(frame.index[[-1]], inplace=True)
+    frame.reset_index(drop=True, inplace=True)
+    # Calculate K+ binding positions and append to lists
+    S0.append(round((frame[8][5] + frame[8][4]) / 2, 3))
+    S1.append(round((frame[8][4] + frame[8][3]) / 2, 3))
+    S2.append(round((frame[8][3] + frame[8][2]) / 2, 3))
+    S3.append(round((frame[8][2] + frame[8][1]) / 2, 3))
+    S4.append(round((frame[8][1] + frame[8][0]) / 2, 3))
+S0_mean = np.mean(S0)
+S1_mean = np.mean(S1)
+S2_mean = np.mean(S2)
+S3_mean = np.mean(S3)
+S4_mean = np.mean(S4)
+
+# Obtain pore end locations
+pore_end = []
+for frame in pd.read_fwf(os.path.join('temp_pdb_' + name, 'pore_end.pdb'), chunksize=1 + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
+    # Delete last line (containing just 'END'), reset index to 0, and name columns
+    frame.drop(frame.index[[-1]], inplace=True)
+    frame.reset_index(drop=True, inplace=True)
+    # Calculate pore end positions and append to lists
+    pore_end.append(frame[8][0])
+pore_end_mean = np.mean(pore_end)
+
+# If applicable, obtain center of mass of drug binding residues in z as well as drugs
+# Drug binding residues
+drug_binding_res_data = pd.read_csv(os.path.join('temp_pdb_' + name, 'drugBindingPoreRes.dat'), header=None)
+drug_binding_res_data.columns = ['Frame', 'Y652', 'F656', 'S660']
+# Drugs
+if arg.drug:
+    max_z_data = pd.read_csv(os.path.join('temp_pdb_' + name, arg.drug + '_max_z.dat'), header=None, delimiter=r'\s+', index_col=0)
+    com_z_data = pd.read_csv(os.path.join('temp_pdb_' + name, arg.drug + '_com_z.dat'), header=None, delimiter=r'\s+', index_col=0)
+    min_z_data = pd.read_csv(os.path.join('temp_pdb_' + name, arg.drug + '_min_z.dat'), header=None, delimiter=r'\s+', index_col=0)
+
 # Obtain number of atoms and atom list
 num_atoms = 0
-with open(os.path.join('temp_pdb', name + '_filter_and_pore_area.pdb')) as f:
+with open(os.path.join('temp_pdb_' + name, 'filter_and_pore_area.pdb')) as f:
     next(f)  # Skip header
     for line in f:
         if 'END' in line:
             break
         num_atoms += 1
-atoms_list = pd.read_fwf(os.path.join('temp_pdb', name + '_filter_and_pore_area.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1, nrows=num_atoms)
+atoms_list = pd.read_fwf(os.path.join('temp_pdb_' + name, 'filter_and_pore_area.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1, nrows=num_atoms)
 num_atoms_in_a_segment = len(atoms_list[11]) // 4
 
 # Set atom labels
@@ -311,30 +358,18 @@ for label, ref_residue in zip(atom_labels, atoms_list[3].values[:num_atoms_in_a_
 # Obtain number of ions and initialize dataframe to store their coordinates
 if not arg.drug:
     num_ions = 0
-    with open(os.path.join('temp_pdb', name + '_potassium_ions.pdb')) as f:
+    with open(os.path.join('temp_pdb_' + name, 'potassium_ions.pdb')) as f:
         next(f)  # Skip header
         for line in f:
             if 'END' in line:
                 break
             num_ions += 1
-    ions_list = pd.read_fwf(os.path.join('temp_pdb', name + '_potassium_ions.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1, nrows=num_ions)
+    ions_list = pd.read_fwf(os.path.join('temp_pdb_' + name, 'potassium_ions.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1, nrows=num_ions)
     ions_list = ions_list[(ions_list[2] == 'K+') | (ions_list[2] == 'POT')]
     ions_list = (ions_list[2] + ions_list[1].astype('str')).values
     ions_x = pd.DataFrame(index=ions_list)
     ions_y = pd.DataFrame(index=ions_list)
     ions_z = pd.DataFrame(index=ions_list)
-
-################################################################################################
-
-# Obtain positions of K+ binding in the SF (S0, S1, S2, S3, S4) as well as location of the bottom of the pore (defined as "sequence QRL and resname LEU and name CA")
-S_positions = pd.read_fwf(os.path.join('temp_pdb', name + '_S0-S4.pdb'), header=None, colspecs=PDB_column_width_format, skiprows=1)
-S_positions.drop(S_positions.index[[-1]], inplace=True)
-S0 = round((S_positions[8][5] + S_positions[8][4]) / 2, 3)
-S1 = round((S_positions[8][4] + S_positions[8][3]) / 2, 3)
-S2 = round((S_positions[8][3] + S_positions[8][2]) / 2, 3)
-S3 = round((S_positions[8][2] + S_positions[8][1]) / 2, 3)
-S4 = round((S_positions[8][1] + S_positions[8][0]) / 2, 3)
-bottom_pore = float(open(os.path.join('temp_pdb', name + '_bottom_pore.dat'), 'r').readline())
 
 ################################################################################################
 
@@ -344,13 +379,13 @@ area_list = []
 symmetry_list = []
 AC_list = []
 BD_list = []
-saved_results = [os.path.join('saved_results', name + '_filter_and_pore_area.csv'),
-                 os.path.join('saved_results', name + '_symmetry.csv'),
-                 os.path.join('saved_results', name + '_AC.csv'),
-                 os.path.join('saved_results', name + '_BD.csv')]
+saved_results = [os.path.join('saved_results_' + name, 'filter_and_pore_area.csv'),
+                 os.path.join('saved_results_' + name, 'symmetry.csv'),
+                 os.path.join('saved_results_' + name, 'AC.csv'),
+                 os.path.join('saved_results_' + name, 'BD.csv')]
 print('>> Analyzing distances between atoms in the filter and in the pore...')
 if not all(os.path.exists(result) for result in saved_results):
-    for frame in pd.read_fwf(os.path.join('temp_pdb', name + '_filter_and_pore_area.pdb'), chunksize=num_atoms + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
+    for frame in pd.read_fwf(os.path.join('temp_pdb_' + name, 'filter_and_pore_area.pdb'), chunksize=num_atoms + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
         # Delete last line (containing just 'END'), reset index to 0, and name columns
         frame.drop(frame.index[[-1]], inplace=True)
         frame.reset_index(drop=True, inplace=True)
@@ -402,12 +437,12 @@ else:
 # Analyze ion movement through the filter
 frame_count = 0
 if not arg.drug:
-    saved_results = [os.path.join('saved_results', name + '_ions_x.csv'),
-                     os.path.join('saved_results', name + '_ions_y.csv'),
-                     os.path.join('saved_results', name + '_ions_z.csv')]
+    saved_results = [os.path.join('saved_results_' + name, 'ions_x.csv'),
+                     os.path.join('saved_results_' + name, 'ions_y.csv'),
+                     os.path.join('saved_results_' + name, 'ions_z.csv')]
     print('>> Analyzing ion movement through the filter...')
     if not all(os.path.exists(result) for result in saved_results):
-        for frame in pd.read_fwf(os.path.join('temp_pdb', name + '_potassium_ions.pdb'), chunksize=num_ions + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
+        for frame in pd.read_fwf(os.path.join('temp_pdb_' + name, 'potassium_ions.pdb'), chunksize=num_ions + 1, header=None, colspecs=PDB_column_width_format, skiprows=1):
             # Delete last line (containing just 'END'), reset index to 0, and name columns
             frame.drop(frame.index[[-1]], inplace=True)
             frame.reset_index(drop=True, inplace=True)
@@ -450,7 +485,6 @@ time = area.columns.values
 ################################################################################################
 
 # Set up plots
-sns.set_context('talk')
 title_size = arg.size
 label_size = arg.size
 fig1, axes1 = plt.subplots(6, 1, sharex='col', figsize=(19, 20), num='filterCA_diameters', gridspec_kw={'height_ratios': [1, 1, 1, 1, 1, 2]})  # rows, columns
@@ -485,6 +519,8 @@ for row, label in zip(range(5),  reversed(filter_labels)):
     # sns.lineplot(data=area.iloc[row], ax=axes1[row])
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='navy', alpha=0.7, linestyle='--', ax=axes1[row])  # horizontal line to depict initial area
     axes1[row].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#F3D3BD', '#5E5E5E'])
+    # sns.lineplot(x=time, y=ACs.iloc[row].values, label='A to C', color='#F3D3BD', ax=axes1[row])
+    # sns.lineplot(x=time, y=BDs.iloc[row].values, label='B to D', color='#5E5E5E', ax=axes1[row])
     axes1[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
     axes1[row].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
@@ -492,14 +528,16 @@ for row, label in zip(range(5),  reversed(filter_labels)):
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='gray', alpha=0.7, linestyle='--', ax=axes4[row])  # horizontal line to depict perfect symmetry (1)
     axes4[row].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes4[row])
-axes1[0].set_title('$C\\alpha$-$C\\alpha$ Distances of Filter Residues - ' + name, y=1.04, fontsize=title_size)
-axes4[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry of Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes1[0].set_title('$C\\alpha$-$C\\alpha$ Distances Between Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes4[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry Between Filter Residues - ' + name, y=1.04, fontsize=title_size)
 
 for row, label in zip(range(5, 10),  reversed(filter_labels)):
     # Areas
     # sns.lineplot(data=area.iloc[row], ax=axes2[row - 5], color='red')
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='firebrick', alpha=0.7, linestyle='--', ax=axes2[row - 5])  # create horizontal line to depict initial area
     axes2[row - 5].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#A2A7A5', '#6D696A'])
+    # sns.lineplot(x=time, y=ACs.iloc[row].values, label='A to C', color='#A2A7A5', ax=axes2[row - 5])
+    # sns.lineplot(x=time, y=BDs.iloc[row].values, label='B to D', color='#6D696A', ax=axes2[row - 5])
     axes2[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
     axes2[row - 5].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
@@ -507,14 +545,16 @@ for row, label in zip(range(5, 10),  reversed(filter_labels)):
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='gray', alpha=0.7, linestyle='--', ax=axes5[row - 5])  # horizontal line to depict perfect symmetry (1)
     axes5[row - 5].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes5[row - 5])
-axes2[0].set_title('Backbone Carbonyl $O$-$O$ Distances of Filter Residues - ' + name, y=1.04, fontsize=title_size)
-axes5[0].set_title('$O$-$O$ Symmetry of Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes2[0].set_title('Backbone Carbonyl Oxygen Distances Between Filter Residues - ' + name, y=1.04, fontsize=title_size)
+axes5[0].set_title('Backbone Carbonyl Oxygen Symmetry Between Filter Residues - ' + name, y=1.04, fontsize=title_size)
 
 for row, label in zip(range(10, 13), pore_labels):
     # Areas
     # sns.lineplot(data=area.iloc[row], ax=axes3[row - 10])
     # sns.lineplot(x=[time[0], time[-1]], y=[area.iloc[row][0]] * 2, color='navy', alpha=0.7, linestyle='--', ax=axes3[row - 10])  # create horizontal line to depict initial area
     axes3[row - 10].stackplot(time, ACs.iloc[row].values, BDs.iloc[row].values, labels=['A to C', 'B to D'], colors=['#B1E5F2', '#272635'])
+    # sns.lineplot(x=time, y=ACs.iloc[row].values, label='A to C', color='#B1E5F2', ax=axes3[row - 10])
+    # sns.lineplot(x=time, y=BDs.iloc[row].values, label='B to D', color='#272635', ax=axes3[row - 10])
     axes3[0].legend(title='Subunit dist.', loc='center left', fancybox=True, bbox_to_anchor=(1, 0.5))
     axes3[row - 10].set_ylabel(label, fontsize=label_size)
     # Symmetry Ratios
@@ -522,8 +562,8 @@ for row, label in zip(range(10, 13), pore_labels):
     sns.lineplot(x=[time[0], time[-1]], y=[1] * 2, color='seagreen', alpha=0.7, linestyle='--', ax=axes6[row - 10])  # horizontal line to depict perfect symmetry (1)
     axes6[row - 10].set_ylabel(label, fontsize=label_size)
     turn_y_axis_symmetric(axes6[row - 10])
-axes3[0].set_title('$C\\alpha$-$C\\alpha$ Distances of Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
-axes6[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry of Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes3[0].set_title('$C\\alpha$-$C\\alpha$ Distances Between Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
+axes6[0].set_title('$C\\alpha$-$C\\alpha$ Symmetry Between Drug Binding Pore Residues - ' + name, y=1.04, fontsize=title_size)
 
 ################################################################################################
 
@@ -538,7 +578,7 @@ chi1 = {}
 chi2 = {}
 for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
     # Obtain angles data
-    angles_data = pd.read_fwf(os.path.join('temp_pdb', name + '_' + segname + '_filter_angles.dat'), header=None, colspecs=angles_data_column_width_format)
+    angles_data = pd.read_fwf(os.path.join('temp_pdb_' + name, segname + '_filter_angles.dat'), header=None, colspecs=angles_data_column_width_format)
     angles_data.columns = ['ResNum', 'Residue', 'Frame', 'Phi', 'Psi', 'Chi1', 'Chi2']
     # Use data at initial frame to check and make sure obtained residues are correct and match with pre-defined labels before proceeding
     filter_resnum = angles_data.loc[angles_data['Frame'] == 0, 'ResNum'].values
@@ -578,8 +618,8 @@ chi1 = {}
 chi2 = {}
 for segname in ['PROA', 'PROB', 'PROC', 'PROD']:
     # Obtain angles data and concatenate angles data
-    Y_angles_data = pd.read_fwf(os.path.join('temp_pdb', name + '_' + segname + '_poreY_angles.dat'), header=None, colspecs=angles_data_column_width_format)
-    FS_angles_data = pd.read_fwf(os.path.join('temp_pdb', name + '_' + segname + '_poreFS_angles.dat'), header=None, colspecs=angles_data_column_width_format)
+    Y_angles_data = pd.read_fwf(os.path.join('temp_pdb_' + name, segname + '_poreY_angles.dat'), header=None, colspecs=angles_data_column_width_format)
+    FS_angles_data = pd.read_fwf(os.path.join('temp_pdb_' + name, segname + '_poreFS_angles.dat'), header=None, colspecs=angles_data_column_width_format)
     angles_data = pd.concat([Y_angles_data, FS_angles_data], ignore_index=True)
     angles_data.columns = ['ResNum', 'Residue', 'Frame', 'Phi', 'Psi', 'Chi1', 'Chi2']
     angles_data = angles_data.sort_values(['Frame', 'ResNum'], ascending=(True, True))
@@ -625,7 +665,7 @@ axes10[0].set_title('Chi2 Angles of Selectivity Filter & Drug Binding Pore Resid
 
 # Plot water in pore and in filter
 print('>> Plotting numbers of water molecules in pore and in filter...')
-water_data = pd.read_csv(os.path.join('temp_pdb', name + '_water.dat'), header=None)
+water_data = pd.read_csv(os.path.join('temp_pdb_' + name, 'water.dat'), header=None)
 water_data.columns = ['Frame', 'Inside Filter', 'Behind Filter$_{A}$', 'Behind Filter$_{B}$', 'Behind Filter$_{C}$', 'Behind Filter$_{D}$', 'Inside Pore']
 
 for row, label in zip(range(6), water_data.columns[1:]):
@@ -641,9 +681,6 @@ palette = cycle(sns.color_palette(n_colors=8))
 if arg.drug:
     # Plot drug movement in the pore if specified in the input
     print('>> Plotting drug movement in the pore...')
-    max_z_data = pd.read_csv(os.path.join('temp_pdb', name + '_' + arg.drug + '_max_z.dat'), header=None, delimiter=r'\s+', index_col=0)
-    com_z_data = pd.read_csv(os.path.join('temp_pdb', name + '_' + arg.drug + '_com_z.dat'), header=None, delimiter=r'\s+', index_col=0)
-    min_z_data = pd.read_csv(os.path.join('temp_pdb', name + '_' + arg.drug + '_min_z.dat'), header=None, delimiter=r'\s+', index_col=0)
 
     for (mol, max_z), (mol, com_z), (mol, min_z) in zip(max_z_data.iterrows(), com_z_data.iterrows(), min_z_data.iterrows()):
         # If dataset is filled with NaN, skip
@@ -654,31 +691,26 @@ if arg.drug:
         print('\r   PROGRESS:     ', mol, end=' molecules', flush=True)
     print('\r   PROGRESS:     ', mol, end=' molecules (DONE)\n', flush=True)
 
-    # Obtain center of Mass in z of drug binding pore residues
-    with open(os.path.join('temp_pdb', name + '_drugBindingPoreRes.dat'), 'r') as f:
-        com_z_pore_res = list(map(float, f.readline().strip().split(',')))
-
     # Plot reference lines
     for ax in axes_list:
-        sns.lineplot(x=[time[0], time[-1]], y=[S4] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
-        sns.lineplot(x=time, y=bottom_pore, color='red', alpha=0.7, linestyle='--', ax=ax[-1])
+        sns.lineplot(x=[time[0], time[-1]], y=[S4_mean] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+        sns.lineplot(x=time, y=pore_end_mean, color='red', alpha=0.7, linestyle='--', ax=ax[-1])
         # Annotate reference positions, position of annotation is determined automatically
-        ax[-1].text(arg.time_total // 20, S4, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, S4, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20, bottom_pore, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, bottom_pore, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        # ax[-1].text(arg.time_total // 20, S4_mean, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, S4_mean, r'${K^+} S4$', size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        # ax[-1].text(arg.time_total // 20, pore_end_mean, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        ax[-1].text(arg.time_total // 20 * 19, pore_end_mean, 'Pore End', size=label_size - 4, color='red', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+
         # Annotate Center of Mass in z of drug binding pore residues in the first frame
-        ax[-1].text(arg.time_total // 20, com_z_pore_res[0], pore_labels[0], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[0], pore_labels[0], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[0]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+        ax[-1].text(arg.time_total // 20 * 19, drug_binding_res_data['Y652'][int(len(drug_binding_res_data['Y652']) // 20 * 19)], 'Y652', size=label_size - 4, color='darkslategray', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=time, y=drug_binding_res_data['Y652'], color='darkslategray', alpha=0.7, linestyle='--', ax=ax[-1])
 
-        ax[-1].text(arg.time_total // 20, com_z_pore_res[1], pore_labels[1], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[1], pore_labels[1], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[1]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+        ax[-1].text(arg.time_total // 20 * 19, drug_binding_res_data['F656'][int(len(drug_binding_res_data['F656']) // 20 * 19)], 'F656', size=label_size - 4, color='indianred', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=time, y=drug_binding_res_data['F656'], color='indianred', alpha=0.7, linestyle='--', ax=ax[-1])
 
-        ax[-1].text(arg.time_total // 20, com_z_pore_res[2], pore_labels[2], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        ax[-1].text(arg.time_total // 20 * 19, com_z_pore_res[2], pore_labels[2], size=label_size - 4, color='blue', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
-        sns.lineplot(x=[time[0], time[-1]], y=[com_z_pore_res[2]] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
+        ax[-1].text(arg.time_total // 20 * 19, drug_binding_res_data['S660'][int(len(drug_binding_res_data['S660']) // 20 * 19)], 'S660', size=label_size - 4, color='seagreen', ha='center', va='center', path_effects=[pe.withStroke(linewidth=7, foreground='white')])
+        sns.lineplot(x=time, y=drug_binding_res_data['S660'], color='seagreen', alpha=0.7, linestyle='--', ax=ax[-1])
+
 else:
     # Plot ion movement over time
     print('>> Plotting ion movement over time...')
@@ -689,7 +721,7 @@ else:
         temp_t = []
 
         for x, y, z, t in zip(x.values, y.values, z.values, time):
-            if (sqrt(x**2 + y**2) <= 10 and S4 <= z <= S0) or (sqrt(x**2 + y**2) <= 15 and (S4 - 10 <= z < S4 or S0 < z <= S0 + 15)):
+            if (sqrt(x**2 + y**2) <= 10 and S4_mean <= z <= S0_mean) or (sqrt(x**2 + y**2) <= 15 and (S4_mean - 10 <= z < S4_mean or S0_mean < z <= S0_mean + 15)):
                 if len(temp_z) != -1:
                     temp_z.append(z)
                     temp_t.append(t)
@@ -711,7 +743,7 @@ else:
                     sns.lineplot(x=t, y=z, ax=ax[-1])
 
     # Plot reference lines
-    for z, label in zip([S0, S1, S2, S3, S4], ['S0', 'S1', 'S2', 'S3', 'S4']):
+    for z, label in zip([S0_mean, S1_mean, S2_mean, S3_mean, S4_mean], ['S0', 'S1', 'S2', 'S3', 'S4']):
         for ax in axes_list:
             sns.lineplot(x=[time[0], time[-1]], y=[z] * 2, color='blue', alpha=0.7, linestyle='--', ax=ax[-1])
             # Annotate S positions, position of annotation is determined automatically
@@ -734,7 +766,8 @@ for ax in axes_list_heatmap:
                        width=0.3,
                        height=5,
                        loc='upper right',
-                       bbox_to_anchor=(0.04, 0, 1, 1),  # (x0, y0, width, height) where (x0,y0) are the lower left corner coordinates of the bounding box
+                       bbox_to_anchor=(0.04, 0, 1, 1),
+                       # (x0, y0, width, height) where (x0,y0) are the lower left corner coordinates of the bounding box
                        bbox_transform=ax[0].transAxes,
                        borderpad=0)
     cb1 = matplotlib.colorbar.ColorbarBase(axins, cmap=sns.color_palette('twilight_shifted', as_cmap=True),
@@ -774,57 +807,58 @@ for ax in axes_list_noheatmap:
 
 # Set limits
 # Filter CA radii
-axes1[0].set(ylim=(0, 40))
-axes1[1].set(ylim=(0, 25))
-axes1[2].set(ylim=(0, 22))
-axes1[3].set(ylim=(0, 22))
-axes1[4].set(ylim=(0, 22))
+# axes1[0].set(ylim=(0, 40))
+# axes1[1].set(ylim=(0, 30))
+# axes1[2].set(ylim=(0, 27))
+# axes1[3].set(ylim=(0, 27))
+# axes1[4].set(ylim=(0, 27))
 
 # Filter O radii
-axes2[0].set(ylim=(0, 40))
-axes2[1].set(ylim=(0, 35))
-axes2[2].set(ylim=(0, 20))
-axes2[3].set(ylim=(0, 17))
-axes2[4].set(ylim=(0, 17))
+# axes2[0].set(ylim=(0, 40))
+# axes2[1].set(ylim=(0, 35))
+# axes2[2].set(ylim=(0, 30))
+# axes2[3].set(ylim=(0, 30))
+# axes2[4].set(ylim=(0, 22))
 
 # Filter CA symmetry
-axes4[0].set(ylim=(0.6, 2.5))
-axes4[1].set(ylim=(0.6, 1.5))
-axes4[2].set(ylim=(0.6, 1.5))
-axes4[3].set(ylim=(0.6, 1.5))
-axes4[4].set(ylim=(0.6, 1.5))
+# axes4[0].set(ylim=(0.6, 3))
+# axes4[1].set(ylim=(0.6, 1.5))
+# axes4[2].set(ylim=(0.6, 1.5))
+# axes4[3].set(ylim=(0.6, 1.5))
+# axes4[4].set(ylim=(0.6, 1.5))
 
 # Filter O symmetry
-axes5[0].set(ylim=(0.6, 2.5))
-axes5[1].set(ylim=(0.6, 1.8))
-axes5[2].set(ylim=(0.4, 2.5))
-axes5[3].set(ylim=(0.6, 2.5))
-axes5[4].set(ylim=(0.6, 1.5))
+# axes5[0].set(ylim=(0.6, 2.5))
+# axes5[1].set(ylim=(0.6, 1.8))
+# axes5[2].set(ylim=(0.4, 2.5))
+# axes5[3].set(ylim=(0.6, 2.5))
+# axes5[4].set(ylim=(0.6, 1.5))
 
 # # Pore radii
-axes3[0].set(ylim=(0, 50))
-axes3[1].set(ylim=(0, 50))
-axes3[2].set(ylim=(0, 40))
+# axes3[0].set(ylim=(0, 50))
+# axes3[1].set(ylim=(0, 50))
+# axes3[2].set(ylim=(0, 50))
 
 # Ions
 if arg.drug:
     for ax in axes_list:
-        ax[-1].set(ylim=(bottom_pore - 7, S4 + 3))
+        ax[-1].set(ylim=(pore_end_mean - 7, S4_mean + 3))
 else:
     for ax in axes_list:
-        ax[-1].set(ylim=(S4 - 7, S0 + 3))
+        ax[-1].set(ylim=(S4_mean - 7, S0_mean + 3))
 
 # Water in filter and pore
-axes11[0].set(ylim=(-0.1, 5.1))
-axes11[1].set(ylim=(-0.1, 10.1))
-axes11[2].set(ylim=(-0.1, 10.1))
-axes11[3].set(ylim=(-0.1, 10.1))
-axes11[4].set(ylim=(-0.1, 10.1))
-axes11[5].set(ylim=(-0.1, 150.1))
+# axes11[0].set(ylim=(-0.4, 6.4))
+# axes11[1].set(ylim=(-0.4, 10.4))
+# axes11[2].set(ylim=(-0.4, 10.4))
+# axes11[3].set(ylim=(-0.4, 10.4))
+# axes11[4].set(ylim=(-0.4, 10.4))
+# axes11[5].set(ylim=(-0.4, 150.4))
 
 ################################################################################################
 
 # Save figures
+
 print('\nPlots are saved as:')
 for figure in ['filterCA_diameters', 'filterO_diameters', 'poreCA_diameters',
                'filterCA_symmetry', 'filterO_symmetry', 'poreCA_symmetry',
@@ -833,12 +867,8 @@ for figure in ['filterCA_diameters', 'filterO_diameters', 'poreCA_diameters',
 
     plt.figure(figure)
 
-    # if figure in ['phi', 'psi', 'chi1', 'chi2']:
-    #     sm = plt.cm.ScalarMappable(cmap=sns.color_palette('twilight_shifted', as_cmap=True), norm=matplotlib.colors.Normalize(vmin=-180, vmax=180))
-    #     plt.colorbar(sm)
-
-    plt.savefig(os.path.join('figures', name + '_' + figure + '.png'), dpi=300)
-    print(os.path.join('figures', name + '_' + figure + '.png'))
+    plt.savefig(os.path.join('figures_' + name, figure + '.png'), dpi=300)
+    print(os.path.join('figures_' + name, figure + '.png'))
     if arg.split > 1:
         # If specified in the input, split each plot into smaller plots covering different times
         for portion in range(arg.split):
@@ -850,7 +880,7 @@ for figure in ['filterCA_diameters', 'filterO_diameters', 'poreCA_diameters',
             plt.xlim(xmin, xmax)
             plt.suptitle('Part ' + str(portion + 1) + '/' + str(arg.split) + ' (' + str(int(xmin)) + ' - ' + str(int(xmax)) + ' ns)', y=0.94)
             plt.title('Part ' + str(portion + 1) + '/' + str(arg.split))
-            plt.savefig(os.path.join('figures', name + '_' + figure + '_part' + str(portion + 1) + '.png'), dpi=300)
-            print(os.path.join('figures', name + '_' + figure + '_part' + str(portion + 1) + '.png'))
+            plt.savefig(os.path.join('figures_' + name, figure + '_part' + str(portion + 1) + '.png'), dpi=300)
+            print(os.path.join('figures_' + name, figure + '_part' + str(portion + 1) + '.png'))
 
 print("\n _._     _,-'\"\"`-._\n,-.`._,'(       |\\`-/|\n    `-.-' \\ )-`( , o o)\n          `-    \\`_`\"'-")
