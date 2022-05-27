@@ -9,24 +9,24 @@
 4. Symmetry of pore
 5. Phi/Psi/Chi1/Chi2 angles of filter and pore residues
 6. Numbers of water in filter and pore
-7. Either Ion movement in the filter
-       or Drug movement in the pore
+7. Ion movement in the filter
+8. Drug movement in the pore
 
 **Requirements:**
 
 Python3, VMD
 
 **Usage:**
-1. Place these scripts in directory containing 1 protein structure file and 1 simulation trajectory file.
+1. Place **simulation_analysis.py** and **aux_scripts** in a directory containing 1 protein structure file and 1 simulation trajectory file.
 2. Run this script (Python 3):
   ```
-  python3 simulation_analysis.py  -p [protein structure file (default=.psf in current dir)]
-                                  -d [simulation trajectory file (default=.dcd in current dir)]
+  python3 simulation_analysis.py  -p [protein structure file (default = .psf in current dir)]
+                                  -d [simulation trajectory file (default = .dcd in current dir)]
                                   -t [total simulation time of the whole trajectory (default = 1000)]
   ```
   Optional arguments:
   ```
-                                  --drug [set to the segname of the drug to analyze drug movement in the pore as opposed to ion movement in the filter]
+                                  --drug [optional, set to the segname of the drug to analyze drug movement in the pore. If not set, the script will analyze ion movement in the filter by default]
                                   -e [analyze the simulation to this frame (default = -1 i.e. all)]
                                   -s [step to analyze trajectory file (default = 1 i.e. every frame accounted for, no skipping)
                                   -x [x label (default='Time (ns)')]
